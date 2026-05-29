@@ -1,0 +1,14 @@
+services:
+  biohermes:
+    build: .
+    ports:
+      - "9091:9091"
+    volumes:
+      - ./samples:/app/samples
+      - ./logs:/app/logs
+    environment:
+      - MINERU_API_URL=${MINERU_API_URL:-http://10.123.45.9:8500}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://open.bigmodel.cn/api/anthropic}
+      - LLM_MODEL=${LLM_MODEL:-GLM-5.1}
+    restart: unless-stopped
