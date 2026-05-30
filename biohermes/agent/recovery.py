@@ -64,5 +64,5 @@ class Recovery:
 
     def _is_non_critical(self, step: TaskStep) -> bool:
         """Determine if a step can be safely skipped."""
-        non_critical_tools = {"data_clean", "report_generate"}
+        non_critical_tools = {"data_clean", "report_generate", "table_extract"}
         return step.tool_name in non_critical_tools

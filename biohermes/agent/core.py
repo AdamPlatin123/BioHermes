@@ -70,7 +70,7 @@ class BioHermesAgent:
         )
         self.sessions[session.session_id] = session
         context = PipelineContext()
-        max_loops = 2  # Allow one re-judge loop
+        max_loops = 3  # Iterative judge loops: initial + up to 2 re-judgments
 
         # Extract file paths from task description
         import re
@@ -87,7 +87,20 @@ class BioHermesAgent:
                 self._emit(session.session_id, "judging", {"task": task, "loop": loop})
                 session.add_event("judging", {"task": task, "loop": loop})
 
-                judge_result = await self.judge.analyze(task)
+                # On re-judge, pass structured context from previous iteration
+                prev_judge = session.judge_result if loop > 0 else None
+                verify_errors = session.verify_result.errors if (loop > 0 and session.verify_result) else None
+                failed_steps = [
+                    f"Step {s.index} ({s.tool_name}): {s.error}"
+                    for s in session.steps if s.status == "failed"
+                ] if loop > 0 else None
+
+                judge_result = await self.judge.analyze(
+                    task,
+                    previous_judge=prev_judge,
+                    verify_errors=verify_errors,
+                    failed_steps=failed_steps,
+                )
                 session.judge_result = judge_result
 
                 self._emit(session.session_id, "judge_complete", judge_result.to_dict())
@@ -97,7 +110,7 @@ class BioHermesAgent:
                 session.status = TaskStatus.PLANNING
                 self._emit(session.session_id, "planning", {"loop": loop})
 
-                steps = await self.planner.plan(task, judge_result)
+                steps = await self.planner.plan(task, judge_result, failed_steps=failed_steps)
                 session.steps = steps
 
                 self._emit(session.session_id, "plan_ready", {
@@ -137,9 +150,11 @@ class BioHermesAgent:
                 if verify_result.passed:
                     break  # All good
                 elif loop < max_loops - 1:
-                    # Re-judge with error context
-                    logger.warning(f"Verify failed (loop {loop}), re-judging")
-                    task = f"{task}\n\n[Previous attempt verification issues: {verify_result.errors}]"
+                    # Re-judge: structured context is passed via Judge/Planner params
+                    logger.warning(
+                        f"Verify failed (loop {loop}): {verify_result.errors}. "
+                        f"Re-judging with error context."
+                    )
                 else:
                     # Final loop, accept with warnings
                     logger.warning("Verify failed on final loop, accepting with warnings")

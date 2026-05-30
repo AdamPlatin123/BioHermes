@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Optional
 from .models import JudgeResult, TaskStep
 from ..llm.client import LLMClient
 from ..llm.prompts import PLANNER_SYSTEM, PLANNER_USER
@@ -16,22 +17,32 @@ class Planner:
     def __init__(self, llm: LLMClient):
         self.llm = llm
 
-    async def plan(self, task: str, judge: JudgeResult) -> list[TaskStep]:
-        """Generate execution plan from judge result."""
+    async def plan(self, task: str, judge: JudgeResult,
+                   failed_steps: Optional[list[str]] = None) -> list[TaskStep]:
+        """Generate execution plan from judge result.
+
+        On re-plan (after verify failure), receives failed step descriptions
+        so the plan can avoid or adjust previously failing steps.
+        """
         if self.llm.available:
             try:
-                return await self._llm_plan(task, judge)
+                return await self._llm_plan(task, judge, failed_steps)
             except Exception as e:
                 logger.warning(f"LLM planner failed, using fallback: {e}")
 
-        return self._rule_plan(task, judge)
+        return self._rule_plan(task, judge, failed_steps)
 
-    async def _llm_plan(self, task: str, judge: JudgeResult) -> list[TaskStep]:
+    async def _llm_plan(self, task: str, judge: JudgeResult,
+                        failed_steps: Optional[list[str]] = None) -> list[TaskStep]:
         tools_desc = "\n".join(f"- {name}: {cls.description}" for name, cls in TOOL_REGISTRY.items())
+
+        user_prompt = PLANNER_USER.format(task=task, judge_result=judge.to_dict())
+        if failed_steps:
+            user_prompt += f"\n\n[Previously failed steps to avoid or adjust: {'; '.join(failed_steps)}]"
 
         result = self.llm.chat_json(
             PLANNER_SYSTEM.format(tools=tools_desc),
-            PLANNER_USER.format(task=task, judge_result=judge.to_dict()),
+            user_prompt,
         )
 
         steps = []
@@ -42,10 +53,11 @@ class Planner:
                 tool_name=s.get("tool", ""),
                 tool_args=s.get("args", {}),
             ))
-        return steps if steps else self._rule_plan(task, judge)
+        return steps if steps else self._rule_plan(task, judge, failed_steps)
 
-    def _rule_plan(self, task: str, judge: JudgeResult) -> list[TaskStep]:
-        """Rule-based fallback planner."""
+    def _rule_plan(self, task: str, judge: JudgeResult,
+                   failed_steps: Optional[list[str]] = None) -> list[TaskStep]:
+        """Rule-based fallback planner. Adjusts plan when re-planning after failure."""
         steps = []
         tt = judge.task_type
 

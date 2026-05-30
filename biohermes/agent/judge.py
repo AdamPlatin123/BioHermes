@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from .models import JudgeResult
 from ..llm.client import LLMClient
+from typing import Optional
 from ..llm.prompts import JUDGE_SYSTEM, JUDGE_USER
 from ..tools import TOOL_REGISTRY
 
@@ -16,16 +17,41 @@ class Judge:
     def __init__(self, llm: LLMClient):
         self.llm = llm
 
-    async def analyze(self, task: str) -> JudgeResult:
-        """Judge the task using LLM, with keyword fallback."""
+    async def analyze(self, task: str,
+                      previous_judge: Optional[JudgeResult] = None,
+                      verify_errors: Optional[list[str]] = None,
+                      failed_steps: Optional[list[str]] = None) -> JudgeResult:
+        """Judge the task using LLM, with keyword fallback.
+
+        On re-judge (verify failure loop), receives structured context from
+        the previous iteration so LLM can adjust its assessment.
+        """
         tools_desc = self._tools_description()
 
         if self.llm.available:
             try:
-                result = self.llm.chat_json(
-                    JUDGE_SYSTEM,
-                    JUDGE_USER.format(task=task, tools=tools_desc),
-                )
+                user_prompt = JUDGE_USER.format(task=task, tools=tools_desc)
+
+                # Attach re-judge context for iterative correction
+                if verify_errors or failed_steps:
+                    context_parts = []
+                    if previous_judge:
+                        context_parts.append(
+                            f"[Previous judge assessment] type={previous_judge.task_type}, "
+                            f"complexity={previous_judge.complexity}, "
+                            f"tools={previous_judge.recommended_tools}"
+                        )
+                    if verify_errors:
+                        context_parts.append(
+                            f"[Verification errors] {'; '.join(verify_errors)}"
+                        )
+                    if failed_steps:
+                        context_parts.append(
+                            f"[Failed steps] {'; '.join(failed_steps)}"
+                        )
+                    user_prompt += "\n\n" + "\n".join(context_parts)
+
+                result = self.llm.chat_json(JUDGE_SYSTEM, user_prompt)
                 return JudgeResult(
                     task_type=result.get("task_type", "parse"),
                     complexity=result.get("complexity", "simple"),
