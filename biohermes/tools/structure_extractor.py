@@ -19,7 +19,11 @@ class StructureExtractor(BaseTool):
             content = next(iter(context.parsed_results.values()), {}).get("content", "")
 
         if not content:
-            return ToolResult(success=False, error="No content to extract structure from")
+            return ToolResult(
+                success=True,
+                data={"sections": [], "metadata": {}, "formulas": [], "count": 0},
+                metadata={"note": "No content to extract"},
+            )
 
         sections = self.extract_sections(content)
         metadata = self.extract_metadata(content)

@@ -94,6 +94,12 @@ class TableExtractor(BaseTool):
         if not rows or not headers:
             return issues
 
+        # Column alignment check (always runs)
+        header_len = len(headers)
+        for j, row in enumerate(rows):
+            if len(row) != header_len:
+                issues.append(f"Row {j}: {len(row)} cells vs {header_len} headers")
+
         # Identify total row (last row with a total-like header)
         total_keywords = ["合计", "总计", "total", "sum", "小计"]
         total_col_indices = []
@@ -131,12 +137,6 @@ class TableExtractor(BaseTool):
                         issues.append(
                             f"Column '{headers[idx]}': total={val} != sum={round(col_sum, 2)}"
                         )
-
-        # Column alignment check
-        header_len = len(headers)
-        for j, row in enumerate(rows):
-            if len(row) != header_len:
-                issues.append(f"Row {j}: {len(row)} cells vs {header_len} headers")
 
         return issues
 

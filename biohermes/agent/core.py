@@ -62,6 +62,16 @@ class BioHermesAgent:
         if self.on_event:
             self.on_event(session_id, event, data)
 
+    def _evict_sessions(self):
+        """Evict oldest sessions if over limit."""
+        if len(self.sessions) > self._max_sessions:
+            oldest_ids = sorted(
+                self.sessions.keys(),
+                key=lambda k: self.sessions[k].created_at,
+            )[:len(self.sessions) - self._max_sessions]
+            for sid in oldest_ids:
+                del self.sessions[sid]
+
     async def run(self, task: str, session_id: str = None) -> AgentSession:
         """
         Execute complete agent loop: Judge → Select → Execute → Verify.
@@ -72,15 +82,7 @@ class BioHermesAgent:
             task=task,
         )
         self.sessions[session.session_id] = session
-
-        # Evict oldest sessions if over limit
-        if len(self.sessions) > self._max_sessions:
-            oldest_ids = sorted(
-                self.sessions.keys(),
-                key=lambda k: self.sessions[k].created_at,
-            )[:len(self.sessions) - self._max_sessions]
-            for sid in oldest_ids:
-                del self.sessions[sid]
+        self._evict_sessions()
 
         context = PipelineContext()
         max_loops = 3  # Iterative judge loops: initial + up to 2 re-judgments

@@ -39,6 +39,8 @@ class Executor:
 
         try:
             tool_result = await self._call_tool(step, context)
+            if not tool_result.success:
+                raise RuntimeError(tool_result.error or "Tool returned failure")
             step.status = "completed"
             step.output = tool_result.data
             step.end_time = time.time()

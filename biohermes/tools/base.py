@@ -42,20 +42,21 @@ class BaseTool(ABC):
         """Validate args against input_schema.
 
         Returns (is_valid, error_message).
-        If input_schema is empty, all args are accepted.
+        If input_schema is empty or not a dict, all args are accepted.
         """
-        if not self.input_schema:
+        schema = self.input_schema
+        if not schema or not isinstance(schema, dict):
             return True, ""
 
-        required = self.input_schema.get("required", [])
+        required = schema.get("required", [])
         for key in required:
             if key not in args:
                 return False, f"Missing required argument: {key}"
 
-        properties = self.input_schema.get("properties", {})
-        for key, schema in properties.items():
-            if key in args and schema:
-                expected_type = schema.get("type", "")
+        properties = schema.get("properties", {})
+        for key, prop in properties.items():
+            if key in args and prop:
+                expected_type = prop.get("type", "")
                 if expected_type == "string" and not isinstance(args[key], str):
                     return False, f"Argument '{key}' must be a string"
                 elif expected_type == "integer" and not isinstance(args[key], int):
