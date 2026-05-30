@@ -46,11 +46,16 @@ class Planner:
         )
 
         steps = []
+        valid_tools = set(TOOL_REGISTRY.keys()) | {"scan_files"}
         for s in result if isinstance(result, list) else result.get("steps", []):
+            tool_name = s.get("tool", "")
+            if tool_name and tool_name not in valid_tools:
+                logger.warning(f"LLM planner returned unknown tool '{tool_name}', skipping")
+                continue
             steps.append(TaskStep(
                 index=s.get("index", len(steps)),
                 description=s.get("description", ""),
-                tool_name=s.get("tool", ""),
+                tool_name=tool_name,
                 tool_args=s.get("args", {}),
             ))
         return steps if steps else self._rule_plan(task, judge, failed_steps)
@@ -58,6 +63,14 @@ class Planner:
     def _rule_plan(self, task: str, judge: JudgeResult,
                    failed_steps: Optional[list[str]] = None) -> list[TaskStep]:
         """Rule-based fallback planner. Adjusts plan when re-planning after failure."""
+        # Identify tools that previously failed so we can skip them
+        failed_tools: set[str] = set()
+        if failed_steps:
+            for desc in failed_steps:
+                for tool in TOOL_REGISTRY:
+                    if f"({tool})" in desc:
+                        failed_tools.add(tool)
+
         steps = []
         tt = judge.task_type
 
@@ -92,5 +105,15 @@ class Planner:
                 TaskStep(2, "提取表格数据", "table_extract", {}),
                 TaskStep(3, "生成解析报告", "report_generate", {}),
             ]
+
+        # On re-plan: skip tools that failed in previous iteration
+        if failed_tools:
+            filtered = [s for s in steps if s.tool_name not in failed_tools]
+            if filtered:
+                # Re-index
+                for i, s in enumerate(filtered):
+                    s.index = i
+                steps = filtered
+                logger.info(f"Re-planned, skipped failed tools: {failed_tools}")
 
         return steps

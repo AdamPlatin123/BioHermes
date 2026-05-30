@@ -43,7 +43,13 @@ class DataCleaner(BaseTool):
             seen = set()
             unique_rows = []
             for row in rows:
-                key = tuple(row)
+                # Convert all cells to strings for stable hashing
+                try:
+                    key = tuple(str(c) for c in row)
+                except TypeError:
+                    # Unhashable cell — keep the row
+                    unique_rows.append(row)
+                    continue
                 if key not in seen:
                     seen.add(key)
                     unique_rows.append(row)
@@ -67,10 +73,20 @@ class DataCleaner(BaseTool):
         return issues
 
     def _normalize_numbers(self, context: PipelineContext):
+        """Normalize number formats: remove commas, currency symbols, handle % and scientific notation."""
         for table in context.tables:
             for row in table.get("rows", []):
                 for i, cell in enumerate(row):
-                    cleaned = re.sub(r'[,\s]', '', str(cell))
+                    s = str(cell).strip()
+                    # Handle percentage
+                    if s.endswith("%"):
+                        try:
+                            row[i] = str(float(s[:-1].replace(",", "").replace("，", "")) / 100)
+                            continue
+                        except ValueError:
+                            pass
+                    # Handle currency and separators
+                    cleaned = re.sub(r'[\s，,¥$€£]', '', s)
                     try:
                         float(cleaned)
                         row[i] = cleaned

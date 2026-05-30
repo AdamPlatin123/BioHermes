@@ -1,4 +1,4 @@
-"""Base tool abstract class."""
+"""Base tool abstract class with validation support."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -20,7 +20,9 @@ class ToolResult:
 
     def to_dict(self):
         return {
-            "success": self.success, "error": self.error,
+            "success": self.success,
+            "data": self.data if not isinstance(self.data, (str, int, float, bool, type(None))) else self.data,
+            "error": self.error,
             "metadata": self.metadata,
         }
 
@@ -36,5 +38,29 @@ class BaseTool(ABC):
         """Execute the tool with given args and pipeline context."""
         ...
 
-    def validate_args(self, args: dict) -> bool:
-        return True
+    def validate_args(self, args: dict) -> tuple[bool, str]:
+        """Validate args against input_schema.
+
+        Returns (is_valid, error_message).
+        If input_schema is empty, all args are accepted.
+        """
+        if not self.input_schema:
+            return True, ""
+
+        required = self.input_schema.get("required", [])
+        for key in required:
+            if key not in args:
+                return False, f"Missing required argument: {key}"
+
+        properties = self.input_schema.get("properties", {})
+        for key, schema in properties.items():
+            if key in args and schema:
+                expected_type = schema.get("type", "")
+                if expected_type == "string" and not isinstance(args[key], str):
+                    return False, f"Argument '{key}' must be a string"
+                elif expected_type == "integer" and not isinstance(args[key], int):
+                    return False, f"Argument '{key}' must be an integer"
+                elif expected_type == "boolean" and not isinstance(args[key], bool):
+                    return False, f"Argument '{key}' must be a boolean"
+
+        return True, ""

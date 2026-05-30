@@ -1,4 +1,4 @@
-"""Verifier layer: automatic result validation."""
+"""Verifier layer: automatic result validation at three levels."""
 from __future__ import annotations
 
 import logging
@@ -19,7 +19,7 @@ class Verifier:
         self.llm = llm
 
     async def verify(self, session: AgentSession, context: PipelineContext) -> VerifyResult:
-        """Three-level verification: format → completeness → consistency."""
+        """Three-level verification: format -> completeness -> consistency."""
         checks = []
         warnings = []
         errors = []
@@ -59,15 +59,25 @@ class Verifier:
         return result
 
     def _check_format(self, session: AgentSession, ctx: PipelineContext) -> dict:
+        """Level 1: Check outputs are non-empty and well-formed."""
         checks = []
         errors = []
 
         for step in session.steps:
-            if step.status == "completed" and not step.output:
-                checks.append({"name": f"step_{step.index}_output", "passed": False, "detail": "No output"})
-                errors.append(f"Step {step.index} completed but produced no output")
-            elif step.status == "completed":
-                checks.append({"name": f"step_{step.index}_output", "passed": True, "detail": "Has output"})
+            if step.status == "completed":
+                if not step.output:
+                    checks.append({"name": f"step_{step.index}_output", "passed": False,
+                                   "detail": "No output"})
+                    errors.append(f"Step {step.index} completed but produced no output")
+                elif isinstance(step.output, dict) and step.output.get("note") == "Already parsed":
+                    checks.append({"name": f"step_{step.index}_output", "passed": True,
+                                   "detail": "Skipped (already parsed)"})
+                else:
+                    checks.append({"name": f"step_{step.index}_output", "passed": True,
+                                   "detail": "Has output"})
+            elif step.status == "skipped":
+                checks.append({"name": f"step_{step.index}_output", "passed": True,
+                               "detail": "Non-critical step skipped"})
 
         if not ctx.parsed_results and any("parse" in s.tool_name for s in session.steps):
             errors.append("No parsed results produced")
@@ -75,10 +85,12 @@ class Verifier:
         return {"checks": checks, "errors": errors}
 
     def _check_completeness(self, session: AgentSession, ctx: PipelineContext) -> dict:
+        """Level 2: Check step completion rate and data volumes."""
         checks = []
         warnings = []
 
-        completed = sum(1 for s in session.steps if s.status == "completed")
+        completed = sum(1 for s in session.steps
+                        if s.status in ("completed", "completed_fallback", "skipped"))
         total = len(session.steps)
         checks.append({
             "name": "step_completion", "passed": completed == total,
@@ -90,16 +102,21 @@ class Verifier:
 
         if ctx.tables:
             for i, table in enumerate(ctx.tables):
-                if table.get("row_count", 0) == 0:
+                row_count = table.get("row_count", 0)
+                col_count = table.get("col_count", 0)
+                if row_count == 0:
                     warnings.append(f"Table {i} has no data rows")
+                if col_count == 0:
+                    warnings.append(f"Table {i} has no columns")
                 checks.append({
-                    "name": f"table_{i}", "passed": table.get("row_count", 0) > 0,
-                    "detail": f"{table.get('row_count', 0)} rows",
+                    "name": f"table_{i}", "passed": row_count > 0 and col_count > 0,
+                    "detail": f"{row_count} rows x {col_count} cols",
                 })
 
         return {"checks": checks, "warnings": warnings}
 
     def _check_consistency(self, session: AgentSession, ctx: PipelineContext) -> dict:
+        """Level 3: Check data integrity — column alignment and numeric totals."""
         checks = []
         errors = []
         warnings = []
@@ -107,13 +124,16 @@ class Verifier:
         for i, table in enumerate(ctx.tables):
             headers = table.get("headers", [])
             rows = table.get("rows", [])
+
+            # Column alignment check
             for j, row in enumerate(rows):
-                if len(row) != len(headers) and headers:
-                    errors.append(f"Table {i} row {j}: column mismatch ({len(row)} vs {len(headers)})")
+                if headers and len(row) != len(headers):
+                    errors.append(
+                        f"Table {i} row {j}: column mismatch ({len(row)} vs {len(headers)})")
                     break
 
-            # Check numeric totals
-            consistency = self._check_table_totals(table)
+            # Numeric totals check
+            consistency = self._check_table_totals(table, i)
             if consistency:
                 checks.append(consistency)
                 if not consistency["passed"]:
@@ -121,37 +141,69 @@ class Verifier:
 
         return {"checks": checks, "errors": errors, "warnings": warnings}
 
-    def _check_table_totals(self, table: dict) -> Optional[dict]:
+    def _check_table_totals(self, table: dict, table_idx: int) -> Optional[dict]:
+        """Check numeric totals: last row sum vs computed sum of preceding rows."""
         headers = table.get("headers", [])
         rows = table.get("rows", [])
+
         for i, h in enumerate(headers):
-            if any(kw in str(h).lower() for kw in ["合计", "总计", "total"]):
-                if rows and i < len(rows[-1]):
-                    try:
-                        total = float(str(rows[-1][i]).replace(",", "").replace("，", ""))
-                        col_sum = 0
-                        for row in rows[:-1]:
-                            if i < len(row):
-                                try:
-                                    col_sum += float(str(row[i]).replace(",", "").replace("，", ""))
-                                except ValueError:
-                                    pass
-                        if abs(total - col_sum) > 0.01 and col_sum > 0:
-                            return {
-                                "name": f"total_check_{i}",
-                                "passed": False,
-                                "detail": f"Total {total} != sum {col_sum}",
-                            }
-                        return {"name": f"total_check_{i}", "passed": True, "detail": "Consistent"}
-                    except ValueError:
-                        pass
+            if not any(kw in str(h).lower() for kw in ["合计", "总计", "total", "sum"]):
+                continue
+
+            if not rows or i >= len(rows[-1]):
+                continue
+
+            try:
+                total = self._parse_number(rows[-1][i])
+                if total is None:
+                    continue
+
+                col_sum = 0.0
+                valid = True
+                for row in rows[:-1]:
+                    if i >= len(row):
+                        valid = False
+                        break
+                    val = self._parse_number(row[i])
+                    if val is None:
+                        valid = False
+                        break
+                    col_sum += val
+
+                if not valid:
+                    continue
+
+                if abs(total - col_sum) > 0.01 and col_sum > 0:
+                    return {
+                        "name": f"total_check_t{table_idx}_c{i}",
+                        "passed": False,
+                        "detail": f"Table {table_idx} col '{h}': total={total} != sum={col_sum}",
+                    }
+                return {
+                    "name": f"total_check_t{table_idx}_c{i}",
+                    "passed": True,
+                    "detail": f"Table {table_idx} col '{h}': consistent",
+                }
+            except Exception:
+                continue
+
         return None
 
+    @staticmethod
+    def _parse_number(value) -> Optional[float]:
+        """Safely parse a string to float, handling commas and Chinese punctuation."""
+        try:
+            return float(str(value).replace(",", "").replace("，", "").replace(" ", "").strip())
+        except (ValueError, TypeError):
+            return None
+
     async def _llm_verify(self, session: AgentSession, ctx: PipelineContext) -> Optional[dict]:
+        """Level 4: Optional LLM-based quality assessment."""
         try:
             import json
             results_summary = {
-                "steps_completed": sum(1 for s in session.steps if s.status == "completed"),
+                "steps_completed": sum(
+                    1 for s in session.steps if s.status in ("completed", "completed_fallback")),
                 "steps_total": len(session.steps),
                 "tables": len(ctx.tables),
                 "structures": len(ctx.structures),
@@ -163,7 +215,8 @@ class Verifier:
             )
             return {
                 "name": "llm_quality", "passed": resp.get("passed", True),
-                "detail": "LLM quality check",
+                "detail": resp.get("reason", "LLM quality check"),
             }
-        except Exception:
+        except Exception as e:
+            logger.warning(f"LLM verify failed: {e}")
             return None

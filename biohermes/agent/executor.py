@@ -1,6 +1,7 @@
-"""Executor layer: runs pipeline steps with context passing."""
+"""Executor layer: runs pipeline steps with context passing and timeout."""
 from __future__ import annotations
 
+import asyncio
 import time
 import logging
 from typing import Callable, Optional
@@ -11,14 +12,18 @@ from ..tools.base import BaseTool, ToolResult
 
 logger = logging.getLogger("biohermes.agent")
 
+DEFAULT_TOOL_TIMEOUT = 300  # 5 minutes
+
 
 class Executor:
     """Executes pipeline steps, passing PipelineContext between tools."""
 
     def __init__(self, tools: dict[str, BaseTool],
-                 on_event: Optional[Callable] = None):
+                 on_event: Optional[Callable] = None,
+                 tool_timeout: float = DEFAULT_TOOL_TIMEOUT):
         self.tools = tools
         self.on_event = on_event
+        self.tool_timeout = tool_timeout
 
     def _emit(self, session_id: str, event: str, data: dict):
         if self.on_event:
@@ -41,6 +46,14 @@ class Executor:
             session.add_event("step_complete", {"step": step.index, "duration": step.duration()})
             return True
 
+        except asyncio.TimeoutError:
+            step.status = "failed"
+            step.error = f"Tool {step.tool_name} timed out after {self.tool_timeout}s"
+            step.end_time = time.time()
+            logger.error(f"Step {step.index} timed out: {step.tool_name}")
+            self._emit(session.session_id, "step_timeout", {"step": step.index, "tool": step.tool_name})
+            return False
+
         except Exception as e:
             step.status = "failed"
             step.error = str(e)
@@ -50,7 +63,7 @@ class Executor:
             return False
 
     async def _call_tool(self, step: TaskStep, context: PipelineContext) -> ToolResult:
-        """Call the tool specified in the step."""
+        """Call the tool specified in the step with timeout protection."""
         tool_name = step.tool_name
         args = dict(step.tool_args)
         args["_step_index"] = step.index
@@ -59,9 +72,16 @@ class Executor:
         if tool_name == "mineru_parse":
             if not args.get("file_path") and context.files:
                 args["file_path"] = context.files[0]
-            if not args.get("file_path") and context.parsed_results:
-                return ToolResult(success=True, data={"note": "Already parsed"}, metadata={"skipped": True})
             if not args.get("file_path"):
+                # Check if this file was already parsed (by filename)
+                if context.parsed_results:
+                    already = any(
+                        fp in args.get("file_path", "") or fp in str(context.files)
+                        for fp in context.parsed_results
+                    )
+                    if already:
+                        return ToolResult(success=True, data={"note": "Already parsed"},
+                                         metadata={"skipped": True})
                 return ToolResult(success=False, error="No file_path provided and no files in context")
         elif tool_name in ("table_extract", "structure_extract", "data_clean"):
             if context.parsed_results and "content" not in args:
@@ -79,7 +99,10 @@ class Executor:
         tc.start_time = time.time()
         step.tool_calls.append(tc)
 
-        result = await tool.execute(args, context)
+        result = await asyncio.wait_for(
+            tool.execute(args, context),
+            timeout=self.tool_timeout,
+        )
 
         tc.status = "completed" if result.success else "failed"
         tc.result = result.data

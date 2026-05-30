@@ -1,6 +1,8 @@
 """BioHermes Agent Core — orchestrates Judge→Select→Execute→Verify loop."""
 from __future__ import annotations
 
+import os
+import re
 import uuid
 import time
 import logging
@@ -54,6 +56,7 @@ class BioHermesAgent:
         self.agent_logger = AgentLogger(self.log_dir)
         self.on_event = on_event
         self.sessions: dict[str, AgentSession] = {}
+        self._max_sessions = 100  # Memory safety limit
 
     def _emit(self, session_id: str, event: str, data: dict):
         if self.on_event:
@@ -69,14 +72,23 @@ class BioHermesAgent:
             task=task,
         )
         self.sessions[session.session_id] = session
+
+        # Evict oldest sessions if over limit
+        if len(self.sessions) > self._max_sessions:
+            oldest_ids = sorted(
+                self.sessions.keys(),
+                key=lambda k: self.sessions[k].created_at,
+            )[:len(self.sessions) - self._max_sessions]
+            for sid in oldest_ids:
+                del self.sessions[sid]
+
         context = PipelineContext()
         max_loops = 3  # Iterative judge loops: initial + up to 2 re-judgments
 
         # Extract file paths from task description
-        import re
         file_paths = re.findall(r'/[\w\-./]+\.(?:pdf|docx|pptx|png|jpg|jpeg)', task, re.IGNORECASE)
         if file_paths:
-            existing = [fp for fp in file_paths if __import__('os').path.exists(fp)]
+            existing = [fp for fp in file_paths if os.path.exists(fp)]
             if existing:
                 context.files = existing
 
@@ -185,7 +197,7 @@ class BioHermesAgent:
         return session
 
     def _summarize(self, session: AgentSession, context: PipelineContext) -> str:
-        completed = sum(1 for s in session.steps if s.status in ("completed", "completed_fallback"))
+        completed = sum(1 for s in session.steps if s.status in ("completed", "completed_fallback", "skipped"))
         total = len(session.steps)
         tools_used = set()
         for s in session.steps:
