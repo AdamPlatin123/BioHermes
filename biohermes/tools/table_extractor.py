@@ -108,9 +108,40 @@ class TableExtractor(BaseTool):
                 total_col_indices.append(i)
 
         if not total_col_indices:
+            # Fallback: detect total row by first-column keyword
+            total_row_keywords = ["合计", "总计", "total", "sum", "小计"]
+            for ri, row in enumerate(rows):
+                if row and any(kw in str(row[0]).lower() for kw in total_row_keywords):
+                    # This is a total row — check all numeric columns
+                    for ci in range(1, len(headers)):
+                        if ci >= len(row):
+                            continue
+                        total_val = self._parse_number(row[ci])
+                        if total_val is None:
+                            continue
+                        col_sum = 0.0
+                        valid = True
+                        for other_row in rows:
+                            if other_row is row:
+                                continue
+                            if ci < len(other_row):
+                                v = self._parse_number(other_row[ci])
+                                if v is not None:
+                                    col_sum += v
+                                else:
+                                    # Non-numeric value in detail row — skip this column
+                                    valid = False
+                                    break
+                            else:
+                                valid = False
+                                break
+                        if valid and abs(total_val - col_sum) > 0.01 and col_sum > 0:
+                            issues.append(
+                                f"Row {ri} col '{headers[ci]}': total={total_val} != sum={round(col_sum, 2)}"
+                            )
             return issues
 
-        # Check if last row is a total row
+        # Check if last row is a total row (column-based detection)
         last_row = rows[-1]
         is_total_row = False
         for idx in total_col_indices:
