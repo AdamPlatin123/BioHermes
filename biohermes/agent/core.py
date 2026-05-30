@@ -72,6 +72,14 @@ class BioHermesAgent:
         context = PipelineContext()
         max_loops = 2  # Allow one re-judge loop
 
+        # Extract file paths from task description
+        import re
+        file_paths = re.findall(r'/[\w\-./]+\.(?:pdf|docx|pptx|png|jpg|jpeg)', task, re.IGNORECASE)
+        if file_paths:
+            existing = [fp for fp in file_paths if __import__('os').path.exists(fp)]
+            if existing:
+                context.files = existing
+
         try:
             for loop in range(max_loops):
                 # ─── JUDGE ───

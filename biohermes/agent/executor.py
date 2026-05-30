@@ -56,13 +56,13 @@ class Executor:
         args["_step_index"] = step.index
 
         # Pass context data to tool args when needed
-        if tool_name == "mineru_parse" and not args.get("file_path"):
-            if context.files:
+        if tool_name == "mineru_parse":
+            if not args.get("file_path") and context.files:
                 args["file_path"] = context.files[0]
-            elif context.parsed_results:
+            if not args.get("file_path") and context.parsed_results:
                 return ToolResult(success=True, data={"note": "Already parsed"}, metadata={"skipped": True})
-            else:
-                return ToolResult(success=False, error="No files to parse")
+            if not args.get("file_path"):
+                return ToolResult(success=False, error="No file_path provided and no files in context")
         elif tool_name in ("table_extract", "structure_extract", "data_clean"):
             if context.parsed_results and "content" not in args:
                 first_result = next(iter(context.parsed_results.values()), {})

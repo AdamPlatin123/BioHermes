@@ -48,7 +48,8 @@ class Judge:
         tools = []
         strategy = "sequential"
 
-        if any(kw in t for kw in ["批量", "batch", "多个", "所有", "all"]):
+        # Batch requires explicit multi-file context
+        if any(kw in t for kw in ["批量", "batch", "多个文件", "所有文件", "目录下"]):
             task_type = "batch"
             tools = ["mineru_parse", "table_extract", "structure_extract", "data_clean", "report_generate"]
             strategy = "parallel"
@@ -62,7 +63,7 @@ class Judge:
             strategy = "hybrid"
         else:
             task_type = "parse"
-            tools = ["mineru_parse", "structure_extract", "report_generate"]
+            tools = ["mineru_parse", "structure_extract", "table_extract", "report_generate"]
 
         if any(kw in t for kw in ["公式", "formula", "数学", "latex"]):
             features["has_formulas"] = True
