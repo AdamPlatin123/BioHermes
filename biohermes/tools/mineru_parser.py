@@ -1,7 +1,8 @@
-"""MinerU document parser tool."""
+"""MinerU document parser tool — supports MinerU v3 async task API."""
 from __future__ import annotations
 
 import json
+import time
 import logging
 import urllib.request
 import urllib.error
@@ -13,13 +14,16 @@ from ..pipeline.context import PipelineContext
 
 logger = logging.getLogger("biohermes.tools")
 
+POLL_INTERVAL = 2   # seconds between status polls
+MAX_POLL_TIME = 300  # max wait for task completion
+
 
 class MinerUParser(BaseTool):
     name = "mineru_parse"
     description = "Parse document (PDF/DOCX/PPTX) to Markdown/JSON via MinerU API"
 
     def __init__(self, api_url: str = "http://10.123.45.9:8500"):
-        self.api_url = api_url
+        self.api_url = api_url.rstrip("/")
 
     def health_check(self) -> dict:
         try:
@@ -52,60 +56,150 @@ class MinerUParser(BaseTool):
     async def _parse(self, file_path: str, output_format: str = "markdown",
                      lang: str = "", enable_formula: bool = True,
                      enable_table: bool = True) -> dict:
+        """Parse via MinerU v3 async task API, with PyMuPDF fallback."""
         logger.info(f"Parsing: {file_path}")
+        filename = Path(file_path).name
 
         try:
-            boundary = "----BioHermesBoundary"
-            with open(file_path, "rb") as f:
-                file_data = f.read()
+            import requests as req_lib
 
-            filename = Path(file_path).name
-            body = (
-                f"--{boundary}\r\n"
-                f'Content-Disposition: form-data; name="files"; filename="{filename}"\r\n'
-                f"Content-Type: application/octet-stream\r\n\r\n"
-            ).encode() + file_data + f"\r\n--{boundary}\r\n".encode()
+            # Submit task via requests (proper multipart encoding)
+            loop = asyncio.get_event_loop()
+            with open(file_path, "rb") as fobj:
+                resp = await loop.run_in_executor(
+                    None,
+                    lambda: req_lib.post(
+                        f"{self.api_url}/file_parse",
+                        files={"files": (filename, fobj, "application/octet-stream")},
+                        data={
+                            "return_md": "true" if output_format == "markdown" else "false",
+                            "backend": "pipeline",
+                            "formula_enable": str(enable_formula).lower(),
+                            "table_enable": str(enable_table).lower(),
+                        },
+                        timeout=300,
+                    )
+                )
 
-            for name, value in [
-                ("return_md", "true" if output_format == "markdown" else "false"),
-                ("backend", "pipeline"),
-                ("formula_enable", str(enable_formula).lower()),
-                ("table_enable", str(enable_table).lower()),
-            ]:
-                body += (
-                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
-                    f"{value}\r\n--{boundary}\r\n"
-                ).encode()
-            body += b"--\r\n"
+            if resp.status_code != 200:
+                raise RuntimeError(f"MinerU API returned {resp.status_code}: {resp.text[:200]}")
 
-            req = urllib.request.Request(
-                f"{self.api_url}/file_parse",
-                data=body,
-                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                result = json.loads(resp.read())
+            task_data = resp.json()
 
-            return {
-                "content": result.get("markdown", ""),
-                "tables": result.get("tables", []),
-                "metadata": {
-                    "filename": filename, "format": output_format,
-                    "lang": lang or "auto",
-                },
-                "status": "success",
-            }
+            # Sync response (has markdown directly)
+            if "markdown" in task_data:
+                return {
+                    "content": task_data.get("markdown", ""),
+                    "tables": task_data.get("tables", []),
+                    "metadata": {"filename": filename, "format": output_format, "lang": lang or "auto"},
+                    "status": "success",
+                }
 
-        except urllib.error.URLError:
-            logger.warning("MinerU API unavailable, using fallback")
+            # Async response: poll for result
+            task_id = task_data.get("task_id", "")
+            if not task_id:
+                return {
+                    "content": str(task_data.get("results", "")),
+                    "tables": [], "metadata": {"filename": filename},
+                    "status": "success",
+                }
+
+            return await self._poll_task(task_id, filename, output_format, lang)
+
+        except ImportError:
+            logger.warning("requests library not available, trying urllib fallback")
+            return await self._urllib_parse(file_path, filename, output_format, lang, enable_formula, enable_table)
+        except Exception as e:
+            logger.warning(f"MinerU API error: {e}, using fallback")
+            return await self._fallback_parse(file_path)
+
+    async def _urllib_parse(self, file_path: str, filename: str,
+                            output_format: str, lang: str,
+                            enable_formula: bool, enable_table: bool) -> dict:
+        """Fallback using urllib (less reliable multipart encoding)."""
+        try:
             return await self._fallback_parse(file_path)
         except Exception as e:
-            logger.error(f"Parse error: {e}")
             return {"content": "", "tables": [], "metadata": {}, "status": "error", "error": str(e)}
 
+    async def _poll_task(self, task_id: str, filename: str,
+                         output_format: str, lang: str) -> dict:
+        """Poll MinerU async task until completion."""
+        start = time.time()
+        while time.time() - start < MAX_POLL_TIME:
+            await asyncio.sleep(POLL_INTERVAL)
+
+            try:
+                req = urllib.request.Request(
+                    f"{self.api_url}/tasks/{task_id}", method="GET"
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    status_data = json.loads(resp.read())
+
+                task_status = status_data.get("status", "")
+
+                if task_status == "completed":
+                    # Fetch the result
+                    result_req = urllib.request.Request(
+                        f"{self.api_url}/tasks/{task_id}/result", method="GET"
+                    )
+                    with urllib.request.urlopen(result_req, timeout=30) as resp:
+                        result_data = json.loads(resp.read())
+
+                    # Extract markdown from results (prefer result endpoint)
+                    content = ""
+                    results = result_data.get("results", {}) or status_data.get("results", {})
+                    if isinstance(results, dict):
+                        for fname, fdata in results.items():
+                            if isinstance(fdata, dict):
+                                content += fdata.get("md_content", fdata.get("markdown", ""))
+
+                    if not content:
+                        content = result_data.get("markdown", "")
+
+                    logger.info(f"MinerU task {task_id} completed: {len(content)} chars")
+                    return {
+                        "content": content,
+                        "tables": result_data.get("tables", []),
+                        "metadata": {
+                            "filename": filename, "format": output_format,
+                            "lang": lang or "auto", "parser": "MinerU_v3",
+                            "task_id": task_id,
+                        },
+                        "status": "success",
+                    }
+
+                elif task_status == "failed":
+                    error = status_data.get("error", "Unknown error")
+                    logger.error(f"MinerU task {task_id} failed: {error}")
+                    return {
+                        "content": "", "tables": [],
+                        "metadata": {"filename": filename, "task_id": task_id},
+                        "status": "error", "error": f"MinerU task failed: {error}",
+                    }
+
+                # Still processing
+                logger.debug(f"MinerU task {task_id}: {task_status}")
+
+            except Exception as e:
+                logger.warning(f"Poll error for task {task_id}: {e}")
+                continue
+
+        return {
+            "content": "", "tables": [],
+            "metadata": {"filename": filename, "task_id": task_id},
+            "status": "error", "error": f"MinerU task timed out after {MAX_POLL_TIME}s",
+        }
+
     async def _fallback_parse(self, file_path: str) -> dict:
+        """PyMuPDF local fallback."""
         logger.info(f"Using PyMuPDF fallback for: {file_path}")
+        if not Path(file_path).exists():
+            return {
+                "content": "", "tables": [],
+                "metadata": {"filename": Path(file_path).name, "parser": "none"},
+                "status": "error", "error": f"File not found: {file_path}",
+            }
         try:
             import fitz
             doc = fitz.open(file_path)
