@@ -8,6 +8,9 @@ from typing import Callable, Optional
 
 from .models import AgentSession, TaskStep, ToolCall
 from ..pipeline.context import PipelineContext
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .self_improve import SelfImprove
 from ..tools.base import BaseTool, ToolResult
 
 logger = logging.getLogger("biohermes.agent")
@@ -20,10 +23,12 @@ class Executor:
 
     def __init__(self, tools: dict[str, BaseTool],
                  on_event: Optional[Callable] = None,
-                 tool_timeout: float = DEFAULT_TOOL_TIMEOUT):
+                 tool_timeout: float = DEFAULT_TOOL_TIMEOUT,
+                 self_improve: Optional[SelfImprove] = None):
         self.tools = tools
         self.on_event = on_event
         self.tool_timeout = tool_timeout
+        self.self_improve = self_improve
 
     def _emit(self, session_id: str, event: str, data: dict):
         if self.on_event:
@@ -101,9 +106,13 @@ class Executor:
         tc.start_time = time.time()
         step.tool_calls.append(tc)
 
+        timeout = self.tool_timeout
+        if self.self_improve:
+            timeout = self.self_improve.suggest_timeout(tool_name, fallback=self.tool_timeout)
+
         result = await asyncio.wait_for(
             tool.execute(args, context),
-            timeout=self.tool_timeout,
+            timeout=timeout,
         )
 
         tc.status = "completed" if result.success else "failed"

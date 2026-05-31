@@ -18,6 +18,7 @@ venv/
 *~
 .DS_Store
 demo_output/
+.gstack/
 samples/*.pdf
 samples/*.docx
 samples/*.pptx

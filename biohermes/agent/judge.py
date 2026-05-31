@@ -4,7 +4,9 @@ from __future__ import annotations
 import logging
 from .models import JudgeResult
 from ..llm.client import LLMClient
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from .self_improve import SelfImprove
 from ..llm.prompts import JUDGE_SYSTEM, JUDGE_USER
 from ..tools import TOOL_REGISTRY
 
@@ -14,8 +16,9 @@ logger = logging.getLogger("biohermes.agent")
 class Judge:
     """Analyzes user task to determine type, complexity, and optimal strategy."""
 
-    def __init__(self, llm: LLMClient):
+    def __init__(self, llm: LLMClient, self_improve: Optional[SelfImprove] = None):
         self.llm = llm
+        self.self_improve = self_improve
 
     async def analyze(self, task: str,
                       previous_judge: Optional[JudgeResult] = None,
@@ -98,10 +101,20 @@ class Judge:
         if any(kw in t for kw in ["双栏", "多栏", "学术论文", "paper"]):
             features["is_multicolumn"] = True
 
+        # Apply self-improve insights: reorder tools by historical success rate
+        risk_factors = []
+        if self.self_improve:
+            insights = self.self_improve.get_tool_insights(task_type)
+            if insights:
+                tools = sorted(tools, key=lambda t: insights.get(t, 0.5), reverse=True)
+                low_rate_tools = [t for t in tools if insights.get(t, 1.0) < 0.5]
+                if low_rate_tools:
+                    risk_factors.append(f"Low historical success: {', '.join(low_rate_tools)}")
+
         return JudgeResult(
             task_type=task_type, complexity="medium" if len(tools) > 3 else "simple",
             document_features=features, recommended_tools=tools,
-            execution_strategy=strategy, risk_factors=[],
+            execution_strategy=strategy, risk_factors=risk_factors,
             fallback_plan="Use PyMuPDF if MinerU unavailable",
         )
 

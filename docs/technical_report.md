@@ -50,6 +50,10 @@ BioHermes 流程: `用户指令 → LLM Judge → 动态 Select → Context Exec
 │  │         PipelineContext (数据流)         │         │
 │  │  files → parsed → tables → structures   │         │
 │  └────────────────────────────────────────┘         │
+│  ┌────────────────────────────────────────┐         │
+│  │       Self-Improve (自学习)              │         │
+│  │  跨会话指标累积 → Judge/Executor 优化    │         │
+│  └────────────────────────────────────────┘         │
 └──────────────────────┬───────────────────────────────┘
                        │
 ┌──────────────────────▼───────────────────────────────┐
@@ -155,7 +159,47 @@ docker-compose up -d
 # API: http://0.0.0.0:9091
 ```
 
-## 7. 适用场景
+## 7. Self-Improve 自学习机制
+
+### 7.1 设计理念
+
+传统 Agent 每次执行都是独立的，无法从历史中积累经验。BioHermes 的 Self-Improve 模块在每次 session 结束后提取执行指标，持久化到 JSON 文件，并在后续 session 的 Judge/Executor 决策中注入历史洞察。
+
+### 7.2 学习维度
+
+| 维度 | 数据结构 | 反馈目标 |
+|------|---------|---------|
+| 工具成功率 | `{tool_name: {task_type: ToolMetrics}}` | Judge 工具推荐排序 |
+| Judge 准确度 | `{task_type: correct/total}` | Judge 风险提示 |
+| 执行时长分布 | `total_duration / total_calls → avg × 3` | Executor 动态超时 |
+
+### 7.3 反馈机制
+
+- **Judge**: 历史成功率高的工具优先推荐；成功率低于 50% 的工具加入 risk_factors
+- **Executor**: 用 `suggest_timeout(tool_name)` 替代固定 300s 超时，基于历史 avg × 3 估算 p95
+- **冷启动安全**: 无历史数据时所有洞察返回空值，退化为默认策略
+
+### 7.4 实现
+
+```python
+class SelfImprove:
+    def learn(self, session: AgentSession, context: PipelineContext):
+        # 提取: 工具成功率、Judge 准确度、执行时长
+        # 持久化到 metrics.json
+
+    def get_tool_insights(self, task_type: str) -> dict[str, float]:
+        # 返回工具在指定任务类型下的成功率
+
+    def suggest_timeout(self, tool_name: str, fallback: float = 300) -> float:
+        # 基于历史 avg_duration × 3 建议超时
+```
+
+集成点：
+- `core.py`: session 结束后调用 `self_improve.learn(session, context)`
+- `judge.py`: 构造函数接收 self_improve，fallback 中调整工具排序
+- `executor.py`: 每步执行前调用 `suggest_timeout()` 动态设置超时
+
+## 8. 适用场景
 
 - 学术论文批量解析与结构化
 - 财务报表智能审核与数字一致性验证

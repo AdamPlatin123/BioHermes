@@ -77,6 +77,25 @@ files → parsed_results → tables → structures → cleaned_data → report
 
 每个工具通过 `context.get_output(step_index)` 获取前序步骤输出，通过 `context.set_output()` 写入当前结果。
 
+### Self-Improve 自学习机制
+
+BioHermes 在 JSEV 四层闭环之上，增加了跨会话的自学习能力。每次 session 结束后提取执行指标，持久化到 JSON，后续 session 动态优化决策：
+
+```
+Session 完成 → SelfImprove.learn() → metrics.json → Judge/Executor 动态调整
+```
+
+| 学习维度 | 数据来源 | 反馈目标 |
+|---------|---------|---------|
+| 工具成功率 | 每步执行结果，按 task_type 分组 | Judge 工具推荐排序（成功率高的优先） |
+| Judge 准确度 | 判断类型 vs 最终成功/失败 | Judge 风险提示（历史低准确率类型加 risk_factors） |
+| 执行时长分布 | 每步 duration，计算 avg × 3 估算 p95 | Executor 动态超时（替代固定 300s） |
+
+**设计特点**：
+- 轻量级 JSON 持久化，无额外数据库依赖
+- 冷启动安全：无历史数据时退化为默认策略
+- 按任务类型分组统计，避免不同类型互相干扰
+
 ### Recovery 三级恢复
 
 ```
@@ -98,6 +117,7 @@ files → parsed_results → tables → structures → cleaned_data → report
 | **任务理解** | LLM 全局语义分析 + 关键词降级 | Skill 引导 + 规则匹配 | 14 类意图分类器 | ReAct 逐步推理 | 图节点预定义逻辑 |
 | **文档解析** | MinerU API + PyMuPDF 双保险 | MinerU CLI + 降级 | MinerU + 253K 公式提取 | MinerU Cloud API | MinerU |
 | **结果验证** | 三级自动校验 + 回环 | 页级 provenance + 合计行核验 | 500 题基准评测对比 | 无明确验证机制 | NL2SQL 结果对比 |
+| **自学习** | 跨会话指标累积 + 动态优化 | 无 | 无 | 无 | 无 |
 | **表格处理** | 跨页合并 + 合并单元格 + 数字一致性 | 表格结构化 + 空结果检测 | 表格结构化 | 表格提取 | NL2SQL 查询 |
 | **异常恢复** | Retry→Degrade→Skip 三级 | OCR retry + CLI fallback + text cleanup | 多引擎切换 | 无明确恢复机制 | 节点异常处理 |
 | **测试覆盖** | 5 个 Demo 场景 | 17 个案例 + 82% 单测覆盖 | 500 题基准评测 | 356 篇文档实测 | 未公开 |
@@ -117,6 +137,8 @@ files → parsed_results → tables → structures → cleaned_data → report
 
 5. **PipelineContext 显式数据流**：步骤间通过结构化 context 传递数据，避免 LLM 上下文窗口污染和信息丢失。
 
+6. **跨会话自学习 (Self-Improve)**：赛道中唯一实现跨会话学习积累的方案。每次执行后自动提取工具成功率、Judge 准确度、执行时长等指标，持久化到 JSON，后续 session 动态调整工具排序、超时策略、风险提示。冷启动安全——无历史数据时退化为默认策略。
+
 ---
 
 ## 项目结构
@@ -130,6 +152,7 @@ biohermes/
 │   ├── executor.py        # Execute 执行层: 工具调用 + 进度推送
 │   ├── verifier.py        # Verify 验证层: 三级自动校验
 │   ├── recovery.py        # Recovery 恢复层: 重试→降级→跳过
+│   ├── self_improve.py    # Self-Improve 自学习: 跨会话指标累积
 │   └── models.py          # 数据模型: Session, Step, ToolCall, JudgeResult
 ├── llm/
 │   ├── client.py          # Anthropic 兼容 LLM 客户端
@@ -236,7 +259,7 @@ curl -X POST http://localhost:9091/api/task \
 | 评分项 (分值) | BioHermes 覆盖 |
 |--------------|---------------|
 | **文档理解与结构化 (20)** | MinerU 解析 + 表格提取（跨页合并）+ 公式提取（LaTeX）+ 结构化抽取 + OCR |
-| **难点攻克与创新 (15)** | Judge 智能判断 + Verify 自动验证 + 数据一致性检查 + 双保险解析降级 |
+| **难点攻克与创新 (15)** | Judge 智能判断 + Verify 自动验证 + 数据一致性检查 + Self-Improve 跨会话学习 + 双保险解析降级 |
 | **Agent 规划与执行 (30)** | Judge→Select→Execute→Verify 四层闭环 + SSE 实时推送 + PipelineContext 数据流 |
 | **稳定性与可复现 (20)** | 三级恢复 + 批量容错 + 结构化 JSON 日志 + Docker 一键部署 |
 | **开源共享 (15)** | 完整开源 (CC-BY-4.0) + BaseTool 可扩展接口 + 标准化 REST/SSE API |

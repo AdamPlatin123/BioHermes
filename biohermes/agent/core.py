@@ -14,6 +14,7 @@ from .planner import Planner
 from .executor import Executor
 from .verifier import Verifier
 from .recovery import Recovery
+from .self_improve import SelfImprove
 from ..llm.client import LLMClient
 from ..pipeline.context import PipelineContext
 from ..tools import create_tools
@@ -49,7 +50,8 @@ class BioHermesAgent:
         )
 
         self.tools: dict[str, BaseTool] = create_tools(self.mineru_api_url)
-        self.judge = Judge(self.llm)
+        self.self_improve = SelfImprove(metrics_path=os.path.join(self.log_dir, "metrics.json"))
+        self.judge = Judge(self.llm, self_improve=self.self_improve)
         self.planner = Planner(self.llm)
         self.verifier = Verifier(self.llm)
         self.recovery = Recovery(max_retries=config.MAX_RETRIES)
@@ -138,7 +140,7 @@ class BioHermesAgent:
 
                 # ─── EXECUTE ───
                 session.status = TaskStatus.EXECUTING
-                executor = Executor(self.tools, self.on_event)
+                executor = Executor(self.tools, self.on_event, self_improve=self.self_improve)
 
                 for step in steps:
                     success = await executor.execute_step(session, step, context)
@@ -179,6 +181,7 @@ class BioHermesAgent:
                 session.result = self._summarize(session, context)
 
             session.finished_at = time.time()
+            self.self_improve.learn(session, context)
             session.add_event("task_complete", {
                 "status": session.status.value,
                 "duration": session.duration(),
