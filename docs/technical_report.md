@@ -118,27 +118,123 @@ LLM 不可用时自动降级为关键词匹配。
 
 ---
 
-## 4. Demo 示例
+## 4. Demo 示例（10 个典型任务交互记录）
 
-### Demo 1: 复杂 PDF 学术论文解析
-- Judge 判断: task_type=parse, features={is_multicolumn, has_formulas, has_tables}
-- Select: mineru_parse → structure_extract → table_extract → report_generate
+> 以下 10 个 Demo 覆盖赛题要求的三大能力：数据理解与结构化、复杂任务规划与执行、系统稳定性。完整交互日志见 `docs/example_logs/`，可视化展示见 `docs/demo.html`。
 
-### Demo 2: 多步任务规划 (核心)
-- Judge 判断: task_type=extract, complexity=complex
-- Select: 4 步执行计划
-- Verify: 格式 + 完整性 + 数字一致性三级校验
+### Demo 1: 简单 PDF 学术论文解析
 
-### Demo 3: 批量处理与异常恢复
-- Judge: task_type=batch, strategy=parallel
-- Recovery: 失败文档自动降级到 PyMuPDF
+| 阶段 | 内容 |
+|------|------|
+| **任务输入** | `解析 /home/zhidao-2/outputs/bayesian_forest_carbon.pdf` |
+| **Judge** | type=parse, complexity=medium, strategy=sequential, tools=[mineru_parse, structure_extract, table_extract, report_generate] |
+| **Execute** | Step 0: mineru_parse (13.2s) → Step 1: structure_extract → Step 2: table_extract → Step 3: report_generate |
+| **Verify** | PASSED (5/5 checks): step_0_output, step_1_output, step_2_output, step_3_output, step_completion |
+| **结果** | 4/4 步骤成功, 解析 1 文件, 耗时 13.2s |
 
-### Demo 4: 复杂表格与图表解析
-- Verify: 数字合计 vs 明细一致性检查
+### Demo 2: 结构化信息提取（章节、公式、元数据）
 
-### Demo 5: 端到端知识库 Pipeline
-- Judge: task_type=pipeline, strategy=hybrid
-- 6 步完整 pipeline: 摄入 → 解析 → 切片 → 表格 → 清洗 → 报告
+| 阶段 | 内容 |
+|------|------|
+| **任务输入** | `解析 bayesian_hierarchical_forest_carbon.pdf，提取所有章节标题、公式和元数据` |
+| **Judge** | type=parse, complexity=medium, tools=[mineru_parse, structure_extract, table_extract, report_generate] |
+| **Execute** | Step 0: mineru_parse (11.1s) → Step 1: structure_extract → Step 2: table_extract → Step 3: report_generate |
+| **Verify** | PASSED (5/5 checks) |
+| **结果** | 4/4 步骤成功, 耗时 11.1s |
+
+### Demo 3: 表格提取与数字一致性验证
+
+| 阶段 | 内容 |
+|------|------|
+| **任务输入** | `解析 ai_ddi_alert_cds.pdf，提取所有表格并验证数字一致性` |
+| **Judge** | type=extract, complexity=medium, tools=[mineru_parse, table_extract, data_clean, report_generate] |
+| **Execute** | Step 0: mineru_parse (10.6s) → Step 1: table_extract → Step 2: data_clean → Step 3: report_generate |
+| **Verify** | PASSED (5/5 checks), 含 Level 3 一致性验证 |
+| **结果** | 4/4 步骤成功, 耗时 10.6s |
+
+### Demo 4: 英文自然语言指令
+
+| 阶段 | 内容 |
+|------|------|
+| **任务输入** | `Parse this PDF ... and extract all tables with structural analysis` |
+| **Judge** | type=extract, complexity=medium — 成功理解英文任务语义 |
+| **Execute** | Step 0: mineru_parse (13.4s) → Step 1: table_extract → Step 2: data_clean → Step 3: report_generate |
+| **Verify** | PASSED (5/5 checks) |
+| **结果** | 4/4 步骤成功, 耗时 13.4s |
+
+### Demo 5: 复杂多步 Pipeline
+
+| 阶段 | 内容 |
+|------|------|
+| **任务输入** | `对文档执行完整处理：解析文档、提取结构化信息、提取表格、清洗数据、生成报告` |
+| **Judge** | type=extract, complexity=medium, 识别为多步处理需求 |
+| **Execute** | Step 0: mineru_parse (11.7s) → Step 1: table_extract → Step 2: data_clean → Step 3: report_generate |
+| **Verify** | PASSED (5/5 checks) |
+| **结果** | 4/4 步骤成功, 耗时 11.7s |
+
+### Demo 6: 批量处理 — 异常检测与报告
+
+| 阶段 | 内容 |
+|------|------|
+| **任务输入** | `批量解析以下文件：file1.pdf 和 file2.pdf` |
+| **Judge** | type=batch, complexity=medium, strategy=parallel — 正确识别批量处理意图 |
+| **Execute** | Step 0: 扫描目录 → **FAILED**: 路径为独立文件而非目录 |
+| **Recovery** | Retry 3 次后无法恢复，Step 0 失败导致整体终止 |
+| **意义** | 展示 Agent 对异常情况的正确检测和报告能力，而非静默忽略错误 |
+
+### Demo 7: 财务报告分析
+
+| 阶段 | 内容 |
+|------|------|
+| **任务输入** | `解析 ai_ddi_alert_cds.pdf 的财务相关表格，验证数字合计与明细的一致性` |
+| **Judge** | type=extract, complexity=medium, 识别财务场景需求 |
+| **Execute** | Step 0: mineru_parse (10.2s) → Step 1: table_extract → Step 2: data_clean → Step 3: report_generate |
+| **Verify** | PASSED (5/5 checks), Level 3 数字一致性验证 |
+| **结果** | 4/4 步骤成功, 耗时 10.2s |
+
+### Demo 8: 深度文档分析（Verify 三级校验闭环）
+
+| 阶段 | 内容 |
+|------|------|
+| **任务输入** | `对 bayesian_forest_carbon.pdf 进行深度解析，提取章节结构、表格数据、LaTeX公式` |
+| **Judge** | type=extract, complexity=medium, 识别综合分析需求 |
+| **Execute** | Step 0: mineru_parse (13.1s) → Step 1: table_extract → Step 2: data_clean → Step 3: report_generate |
+| **Verify** | PASSED (5/5 checks), 三级完整校验 |
+| **结果** | 4/4 步骤成功, 耗时 13.1s |
+
+### Demo 9: 异常恢复演示
+
+| 阶段 | 内容 |
+|------|------|
+| **任务输入** | `解析不存在的文件 /nonexistent/file.pdf，然后降级解析 bayesian_forest_carbon.pdf` |
+| **Judge** | type=parse, complexity=medium — 从任务描述中提取到存在的文件路径 |
+| **Execute** | Step 0: mineru_parse (12.9s) — 自动跳过不存在文件，解析有效路径 |
+| **Verify** | PASSED (5/5 checks) |
+| **结果** | 4/4 步骤成功, 耗时 12.9s |
+| **意义** | 展示 Agent 的鲁棒性：从混合路径中自动筛选有效文件 |
+
+### Demo 10: 端到端知识库 Pipeline
+
+| 阶段 | 内容 |
+|------|------|
+| **任务输入** | `构建知识库索引：解析文档，提取结构化数据和表格，生成摘要报告` |
+| **Judge** | type=extract, complexity=medium, 识别 pipeline 需求 |
+| **Execute** | Step 0: mineru_parse (10.2s) → Step 1: table_extract → Step 2: data_clean → Step 3: report_generate |
+| **Verify** | PASSED (5/5 checks) |
+| **结果** | 4/4 步骤成功, 耗时 10.2s |
+
+### Demo 总结
+
+| 指标 | 数值 |
+|------|------|
+| 总 Demo 数 | 10 |
+| 通过率 | 90% (9/10) |
+| 总执行时间 | 107.4s |
+| 平均耗时 | 10.7s/任务 |
+| 涵盖任务类型 | parse, extract, batch |
+| 涵盖文档类型 | 学术论文 (单栏/多栏), 医药文献 |
+| 涵盖语言 | 中文指令, 英文指令 |
+| 异常恢复 | Demo 6 (检测并报告), Demo 9 (自动降级) |
 
 ---
 

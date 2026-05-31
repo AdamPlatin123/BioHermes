@@ -126,19 +126,23 @@ class Executor:
         return result
 
     def _scan_files(self, args: dict, context: PipelineContext) -> ToolResult:
-        """Built-in file scanner."""
+        """Built-in file scanner. Uses context.files if already populated."""
         from ..utils.file_utils import scan_directory, validate_file
 
         target = args.get("directory", args.get("path", ""))
-        if not target:
-            return ToolResult(success=False, error="No directory specified")
 
-        files = scan_directory(target)
+        if target:
+            files = scan_directory(target)
+        elif context.files:
+            files = list(context.files)
+        else:
+            return ToolResult(success=False, error="No directory specified and no files in context")
+
         context.files = files
         context.set_output(args.get("_step_index", 0), {"files": files, "count": len(files)})
 
         return ToolResult(
             success=True,
             data={"files": files, "count": len(files)},
-            metadata={"directory": target},
+            metadata={"directory": target or "context"},
         )

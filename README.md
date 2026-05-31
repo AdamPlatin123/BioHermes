@@ -180,7 +180,16 @@ demos/
 ├── demo2_multi_step_planning.py  # 多步任务规划 (核心 Demo)
 ├── demo3_batch_recovery.py       # 批量处理与异常恢复
 ├── demo4_table_chart.py          # 复杂表格与图表解析
-└── demo5_knowledge_pipeline.py   # 端到端知识库 Pipeline
+├── demo5_knowledge_pipeline.py   # 端到端知识库 Pipeline
+├── run_all_demos.py              # 10 Demo 统一运行脚本
+└── build_demo_html.py            # 生成 Demo 可视化 HTML
+docs/
+├── technical_report.md           # 完整技术报告
+├── demo.html                     # 10 Demo 交互记录可视化页面
+└── example_logs/                 # 10 个典型任务执行日志 (JSON)
+demo_output/
+├── demo.html                     # Demo 可视化 HTML (同 docs/demo.html)
+└── logs/                         # Demo 执行日志
 ```
 
 ---
