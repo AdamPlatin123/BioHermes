@@ -164,8 +164,8 @@ class TestSelfImproveTimeout:
         si.learn(session, None)
 
         timeout = si.suggest_timeout("fast_tool")
-        # avg=1, *3=3, but floor is 10
-        assert timeout == 10.0
+        # avg=1, *3=3, but floor is 30
+        assert timeout == 30.0
 
 
 class TestSelfImprovePersistence:

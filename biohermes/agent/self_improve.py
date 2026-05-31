@@ -109,23 +109,22 @@ class SelfImprove:
         return result
 
     def suggest_timeout(self, tool_name: str, fallback: float = DEFAULT_TOOL_TIMEOUT) -> float:
-        """Suggest timeout based on historical avg_duration * 3 (approx p95)."""
+        """Suggest timeout based on successful calls' avg_duration * 3 (approx p95)."""
         task_map = self.tool_metrics.get(tool_name, {})
         if not task_map:
             return fallback
 
         total_duration = 0.0
-        total_calls = 0
+        success_count = 0
         for metrics in task_map.values():
             total_duration += metrics.total_duration
-            total_calls += metrics.total_calls
+            success_count += metrics.success_count
 
-        if total_calls == 0:
+        if success_count == 0:
             return fallback
 
-        avg = total_duration / total_calls
-        # Use avg * 3 as rough p95 estimate, with floor of 10s and cap at fallback
-        suggested = max(10.0, min(avg * 3.0, fallback))
+        avg = total_duration / success_count
+        suggested = max(30.0, min(avg * 3.0, fallback))
         return round(suggested, 1)
 
     def get_all_metrics_summary(self) -> dict:
